@@ -1,134 +1,184 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../../../lib/supabase';
-import { Settings, Save, Download, AlertTriangle, Database } from 'lucide-react';
+import { Settings, Save, Download, AlertTriangle, Database, Mic, Play, ArrowRight, ArrowLeft, Hash } from 'lucide-react';
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(false);
+  const [clinics, setClinics] = useState<any[]>([]);
+  const [selectedClinic, setSelectedClinic] = useState('');
+  const [customTicket, setCustomTicket] = useState('');
 
-  // دالة لتصدير الجداول إلى ملفات CSV (نسخة احتياطية)
-  const handleExportData = async (tableName: string) => {
+  // الإعدادات
+  const [settings, setSettings] = useState({
+    clinic_name: '', phones: '', address: '', news_ticker: ''
+  });
+
+  // الصوتيات
+  const [audioList, setAudioList] = useState<any[]>([]);
+  const [audioName, setAudioName] = useState('');
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+
+  useEffect(() => {
+    fetchInitialData();
+  }, []);
+
+  const fetchInitialData = async () => {
+    // جلب الإعدادات
+    const { data: setts } = await supabase.from('app_settings').select('*');
+    if (setts) {
+      const sObj: any = {};
+      setts.forEach(s => sObj[s.setting_key] = s.setting_value);
+      setSettings(sObj as any);
+    }
+    // جلب العيادات
+    const { data: clins } = await supabase.from('clinics').select('*');
+    if (clins) setClinics(clins);
+    // جلب الصوتيات
+    const { data: audios } = await supabase.from('audio_files').select('*').order('created_at', { ascending: false });
+    if (audios) setAudioList(audios);
+  };
+
+  // 1. حفظ الإعدادات الأساسية
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
     setLoading(true);
-    const { data, error } = await supabase.from(tableName).select('*');
-    
-    if (error) {
-      alert('حدث خطأ أثناء تصدير البيانات');
-      setLoading(false);
-      return;
+    for (const [key, value] of Object.entries(settings)) {
+      await supabase.from('app_settings').upsert({ setting_key: key, setting_value: value });
     }
-
-    if (!data || data.length === 0) {
-      alert('لا توجد بيانات لتصديرها من هذا الجدول');
-      setLoading(false);
-      return;
-    }
-
-    // تحويل البيانات إلى CSV
-    const headers = Object.keys(data[0]).join(',');
-    const rows = data.map(row => 
-      Object.values(row).map(value => `"${value}"`).join(',')
-    ).join('\n');
-    
-    // إضافة \uFEFF لدعم الحروف العربية في الإكسيل
-    const csvContent = `${headers}\n${rows}`;
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' }); 
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `${tableName}_backup_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    
+    alert('تم حفظ الإعدادات وتحديث الشاشة بنجاح!');
     setLoading(false);
   };
 
-  // دالة لمسح طوابير اليوم (تهيئة النظام ليوم جديد)
-  const handleClearQueues = async () => {
-    if (!confirm('تحذير خطير: هل أنت متأكد من مسح جميع طوابير اليوم؟ لا يمكن التراجع عن هذا الإجراء.')) return;
-    
+  // 2. التحكم في الطابور
+  const handleQueueControl = async (action: 'next' | 'prev' | 'custom') => {
+    if (!selectedClinic) return alert('يرجى اختيار العيادة أولاً');
     setLoading(true);
-    // نستخدم شرط غير مساوي لمعرف وهمي لحذف كافة السجلات من جدول الطوابير
-    const { error } = await supabase.from('queues').delete().neq('id', '00000000-0000-0000-0000-000000000000'); 
-    
-    if (error) alert('حدث خطأ أثناء مسح الطوابير');
-    else alert('تم مسح جميع الطوابير بنجاح. النظام جاهز ليوم عمل جديد.');
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let targetQueue: any = null;
+
+    if (action === 'next') {
+      const { data } = await supabase.from('queues').select('*').eq('clinic_id', selectedClinic).eq('status', 'waiting').gte('created_at', today.toISOString()).order('ticket_number', { ascending: true }).limit(1);
+      if (data && data.length > 0) targetQueue = data[0];
+    } else if (action === 'prev') {
+      const { data } = await supabase.from('queues').select('*').eq('clinic_id', selectedClinic).in('status', ['finished', 'in_clinic']).gte('created_at', today.toISOString()).order('ticket_number', { ascending: false }).limit(2);
+      if (data && data.length > 1) targetQueue = data[1]; // المريض الذي كان قبل الحالي
+    } else if (action === 'custom') {
+      if (!customTicket) return alert('أدخل رقم التذكرة');
+      const { data } = await supabase.from('queues').select('*').eq('clinic_id', selectedClinic).eq('ticket_number', parseInt(customTicket)).gte('created_at', today.toISOString()).limit(1);
+      if (data && data.length > 0) targetQueue = data[0];
+    }
+
+    if (targetQueue) {
+      await supabase.from('queues').update({ status: 'in_clinic' }).eq('id', targetQueue.id);
+      alert(`تم نداء التذكرة رقم ${targetQueue.ticket_number}`);
+    } else {
+      alert('لم يتم العثور على مريض بهذه المواصفات');
+    }
     setLoading(false);
+  };
+
+  // 3. رفع الملف الصوتي
+  const handleUploadAudio = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!audioFile || !audioName) return alert('يرجى إدخال اسم واختيار ملف');
+    setLoading(true);
+
+    const fileExt = audioFile.name.split('.').pop();
+    const fileName = `${Math.random()}.${fileExt}`;
+    const { data: uploadData, error: uploadError } = await supabase.storage.from('audio_files').upload(fileName, audioFile);
+
+    if (uploadError) {
+      alert('خطأ في الرفع');
+    } else {
+      const { data: urlData } = supabase.storage.from('audio_files').getPublicUrl(fileName);
+      await supabase.from('audio_files').insert([{ name: audioName, file_url: urlData.publicUrl }]);
+      setAudioName(''); setAudioFile(null);
+      fetchInitialData();
+    }
+    setLoading(false);
+  };
+
+  // 4. إذاعة الملف الصوتي
+  const handleBroadcastAudio = async (url: string) => {
+    await supabase.from('screen_events').insert([{ event_type: 'PLAY_AUDIO', payload: { url } }]);
   };
 
   return (
-    <div>
-      <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-        <Settings className="text-primary" />
-        إعدادات النظام والنسخ الاحتياطي
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <Settings className="text-primary" /> إعدادات الإدارة المتقدمة
       </h2>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* قسم بيانات المركز */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 h-fit">
-          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">بيانات المركز الأساسية</h3>
-          <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); alert('تم الحفظ (واجهة تجريبية)'); }}>
-            <div>
-              <label className="block text-sm text-slate-600 mb-1">اسم المجمع الطبي</label>
-              <input type="text" defaultValue="مجمع عيادات الحكمة" className="w-full p-2 border border-slate-300 rounded-lg focus:border-primary focus:outline-none" />
+        {/* قسم التحكم المتقدم بالطابور */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">التحكم في الطابور</h3>
+          <div className="space-y-4">
+            <select value={selectedClinic} onChange={(e) => setSelectedClinic(e.target.value)} className="w-full p-2 border border-slate-300 rounded focus:border-primary focus:outline-none mb-2">
+              <option value="">-- اختر العيادة للتحكم --</option>
+              {clinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            
+            <div className="flex gap-2">
+              <button onClick={() => handleQueueControl('prev')} disabled={loading} className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded flex items-center justify-center gap-1 font-bold">
+                <ArrowRight size={18} /> السابق
+              </button>
+              <button onClick={() => handleQueueControl('next')} disabled={loading} className="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-2 rounded flex items-center justify-center gap-1 font-bold">
+                التالي <ArrowLeft size={18} />
+              </button>
             </div>
-            <div>
-              <label className="block text-sm text-slate-600 mb-1">رقم هاتف المركز</label>
-              <input type="text" defaultValue="0123456789" className="w-full p-2 border border-slate-300 rounded-lg focus:border-primary focus:outline-none" />
+            
+            <div className="flex gap-2 pt-4 border-t">
+              <input type="number" placeholder="رقم مخصص" value={customTicket} onChange={(e) => setCustomTicket(e.target.value)} className="w-full p-2 border border-slate-300 rounded" />
+              <button onClick={() => handleQueueControl('custom')} disabled={loading} className="bg-teal-600 hover:bg-teal-700 text-white px-4 rounded flex items-center gap-1">
+                <Hash size={18} /> نداء
+              </button>
             </div>
-            <div>
-              <label className="block text-sm text-slate-600 mb-1">العنوان</label>
-              <textarea defaultValue="محافظة الجيزة" className="w-full p-2 border border-slate-300 rounded-lg focus:border-primary focus:outline-none"></textarea>
-            </div>
-            <button type="submit" className="bg-primary text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-teal-800 transition-colors">
-              <Save size={18} /> حفظ التعديلات
-            </button>
-          </form>
+          </div>
         </div>
 
-        <div className="space-y-6">
-          {/* قسم النسخ الاحتياطي للتنزيل كإكسيل */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
-              <Database size={20} className="text-blue-500" />
-              النسخ الاحتياطي (تصدير لـ Excel)
-            </h3>
-            <p className="text-sm text-slate-600 mb-4">يمكنك تحميل نسخة من الجداول بصيغة CSV لفتحها وحفظها كأرشيف.</p>
-            
-            <div className="grid grid-cols-2 gap-3">
-              <button onClick={() => handleExportData('patients')} disabled={loading} className="flex items-center justify-center gap-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 py-2 rounded-lg transition-colors text-sm">
-                <Download size={16} /> جدول المرضى
-              </button>
-              <button onClick={() => handleExportData('finances')} disabled={loading} className="flex items-center justify-center gap-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 py-2 rounded-lg transition-colors text-sm">
-                <Download size={16} /> جدول الحسابات
-              </button>
-              <button onClick={() => handleExportData('visits')} disabled={loading} className="flex items-center justify-center gap-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 py-2 rounded-lg transition-colors text-sm">
-                <Download size={16} /> جدول الزيارات
-              </button>
-              <button onClick={() => handleExportData('inventory')} disabled={loading} className="flex items-center justify-center gap-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 py-2 rounded-lg transition-colors text-sm">
-                <Download size={16} /> جدول المخزن
-              </button>
-            </div>
+        {/* قسم الإذاعة الصوتية */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
+            <Mic className="text-purple-500" /> الإذاعة الصوتية للشاشة
+          </h3>
+          <form onSubmit={handleUploadAudio} className="flex gap-2 mb-4">
+            <input type="text" placeholder="اسم الملف (مثال: نداء للطوارئ)" value={audioName} onChange={(e) => setAudioName(e.target.value)} className="flex-1 p-2 border rounded text-sm" required />
+            <input type="file" accept="audio/*" onChange={(e) => setAudioFile(e.target.files?.[0] || null)} className="w-24 text-sm" required />
+            <button type="submit" disabled={loading} className="bg-purple-600 text-white px-3 rounded hover:bg-purple-700">رفع</button>
+          </form>
+          <div className="max-h-40 overflow-y-auto border rounded p-2 bg-slate-50 space-y-2">
+            {audioList.map(a => (
+              <div key={a.id} className="flex justify-between items-center bg-white p-2 border rounded text-sm">
+                <span>{a.name}</span>
+                <button onClick={() => handleBroadcastAudio(a.file_url)} className="text-green-600 hover:bg-green-50 p-1 rounded flex items-center gap-1 font-bold">
+                  <Play size={16} /> إذاعة
+                </button>
+              </div>
+            ))}
           </div>
+        </div>
 
-          {/* قسم العمليات الخطيرة */}
-          <div className="bg-red-50 p-6 rounded-xl shadow-sm border border-red-200">
-            <h3 className="text-lg font-bold text-red-800 mb-4 border-b border-red-200 pb-2 flex items-center gap-2">
-              <AlertTriangle size={20} />
-              منطقة الخطر (إدارة الطوابير)
-            </h3>
-            <p className="text-sm text-red-700 mb-4">
-              تستخدم هذه الأداة في نهاية اليوم لمسح طابور اليوم الحالي وتصفير الشاشات استعداداً ليوم عمل جديد غداً.
-            </p>
-            <button 
-              onClick={handleClearQueues} 
-              disabled={loading}
-              className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white py-3 rounded-lg transition-colors font-bold"
-            >
-              مسح جميع طوابير الانتظار لليوم
-            </button>
-          </div>
+        {/* إعدادات المركز والشريط الإخباري */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 md:col-span-2">
+          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">بيانات المركز وشريط الأخبار</h3>
+          <form onSubmit={handleSaveSettings} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><label className="block text-sm mb-1">اسم المجمع</label><input type="text" value={settings.clinic_name || ''} onChange={(e) => setSettings({...settings, clinic_name: e.target.value})} className="w-full p-2 border rounded" /></div>
+            <div><label className="block text-sm mb-1">الهواتف</label><input type="text" value={settings.phones || ''} onChange={(e) => setSettings({...settings, phones: e.target.value})} className="w-full p-2 border rounded" /></div>
+            <div className="md:col-span-2"><label className="block text-sm mb-1">العنوان</label><input type="text" value={settings.address || ''} onChange={(e) => setSettings({...settings, address: e.target.value})} className="w-full p-2 border rounded" /></div>
+            <div className="md:col-span-2">
+              <label className="block text-sm mb-1 text-amber-600 font-bold">محتوى الشريط الإخباري المتحرك على الشاشة</label>
+              <textarea value={settings.news_ticker || ''} onChange={(e) => setSettings({...settings, news_ticker: e.target.value})} className="w-full p-2 border rounded" rows={2}></textarea>
+            </div>
+            <div className="md:col-span-2 flex justify-end">
+              <button type="submit" disabled={loading} className="bg-primary text-white px-6 py-2 rounded flex gap-2"><Save size={18} /> حفظ وتحديث الشاشة</button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
