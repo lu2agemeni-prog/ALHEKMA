@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabase';
 import Link from 'next/link';
-import { LayoutDashboard, Stethoscope, Users, Wallet, Box, Settings, LogOut } from 'lucide-react';
+import { LayoutDashboard, Stethoscope, Users, Wallet, Box, Settings, LogOut, Home } from 'lucide-react';
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -49,7 +49,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }
 
   const menuItems = [
-    { name: 'الرئيسية', icon: <LayoutDashboard size={20} />, href: '/admin' },
+    { name: 'بوابة النظام', icon: <Home size={20} />, href: '/' },
+    { name: 'لوحة التحكم', icon: <LayoutDashboard size={20} />, href: '/admin' },
     { name: 'العيادات', icon: <Stethoscope size={20} />, href: '/admin/clinics' },
     { name: 'الطاقم الطبي', icon: <Users size={20} />, href: '/admin/staff' },
     { name: 'المالية والحسابات', icon: <Wallet size={20} />, href: '/admin/finances' },
