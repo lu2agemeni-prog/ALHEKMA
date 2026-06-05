@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { MonitorPlay, BellRing, Clock, PhoneCall } from 'lucide-react';
+import { MonitorPlay, BellRing, Clock, PhoneCall, User } from 'lucide-react';
 
 export default function TVScreen() {
   const [activeClinics, setActiveClinics] = useState<any[]>([]);
@@ -10,14 +10,19 @@ export default function TVScreen() {
   const [settings, setSettings] = useState<any>({ news_ticker: '', clinic_name: 'مجمع العيادات', phones: '' });
   const [isScreenActive, setIsScreenActive] = useState(false);
 
-  // دالة التشغيل التتابعي للملفات الصوتية
+  // دالة لاستخراج الاسم الأول فقط من الاسم الكامل
+  const getFirstName = (fullName: string | undefined | null) => {
+    if (!fullName) return '';
+    return fullName.trim().split(' ')[0];
+  };
+
   const playAudioSequence = async (urls: string[]) => {
     for (const url of urls) {
       await new Promise((resolve) => {
         const audio = new Audio(url);
-        audio.onended = resolve; // عند انتهاء الملف، انتقل للتالي
-        audio.onerror = resolve; // إذا لم يجد الملف (مثلا رقم 51)، تخطاه للتالي
-        audio.play().catch(resolve); // لتجاوز مشكلة حظر المتصفح للتشغيل التلقائي
+        audio.onended = resolve; 
+        audio.onerror = resolve; 
+        audio.play().catch(resolve); 
       });
     }
   };
@@ -52,38 +57,30 @@ export default function TVScreen() {
     fetchCurrentState();
     fetchSettings();
 
-    // 1. الاستماع للطوابير والنداء الآلي
     const queueChannel = supabase.channel('queue-changes')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'queues', filter: "status=eq.in_clinic" }, async (payload) => {
-        // نطلب اسم العيادة ورقم الغرفة (room_number) لتشغيل الصوت الصحيح
-        const { data } = await supabase.from('queues').select('*, clinics(name, room_number)').eq('id', payload.new.id).single();
+        const { data } = await supabase.from('queues').select('*, patients(name), clinics(name, room_number)').eq('id', payload.new.id).single();
         
         if (data) {
           setLastCalled(data); 
           fetchCurrentState();
           
-          // بناء قائمة التشغيل
-          const sequenceUrls = ['/ding.mp3']; // 1. صوت التنبيه
+          const sequenceUrls = ['/ding.mp3']; 
           
-          // 2. ملف رقم العميل (نفترض أن لديك ملفات من 1 إلى 50)
           if (data.ticket_number <= 50) {
             sequenceUrls.push(`/${data.ticket_number}.mp3`);
           }
 
-          // 3. ملف رقم العيادة (بالاعتماد على حقل room_number)
           if (data.clinics?.room_number) {
             sequenceUrls.push(`/clinic${data.clinics.room_number}.mp3`);
           }
 
-          // تشغيل القائمة بالترتيب
           playAudioSequence(sequenceUrls);
 
-          // إخفاء التنبيه المرئي من الشاشة بعد 15 ثانية (لإعطاء وقت كافٍ للصوت)
           setTimeout(() => setLastCalled(null), 15000);
         }
       }).subscribe();
 
-    // 2. الاستماع للأحداث الصوتية اللحظية المخصصة من المدير
     const eventsChannel = supabase.channel('screen-events')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'screen_events' }, (payload: any) => {
         if (payload.new.event_type === 'PLAY_AUDIO') {
@@ -91,7 +88,6 @@ export default function TVScreen() {
         }
       }).subscribe();
 
-    // 3. الاستماع لتحديثات شريط الأخبار اللحظية
     const settingsChannel = supabase.channel('settings-changes')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, () => {
         fetchSettings();
@@ -113,7 +109,6 @@ export default function TVScreen() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-white flex flex-col fixed inset-0 z-50">
-      {/* الشريط العلوي */}
       <header className="bg-slate-800 p-6 flex justify-between items-center border-b border-slate-700 shadow-xl">
         <div className="flex items-center gap-4">
           <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-l from-teal-400 to-blue-500">
@@ -133,17 +128,26 @@ export default function TVScreen() {
         </div>
       </header>
 
-      {/* تنبيه النداء */}
       {lastCalled && (
-        <div className="absolute top-32 left-1/2 transform -translate-x-1/2 w-11/12 bg-gradient-to-r from-amber-500 to-orange-600 rounded-3xl shadow-[0_0_100px_rgba(245,158,11,0.6)] p-8 text-center z-50 animate-in zoom-in duration-300">
+        <div className="absolute top-28 left-1/2 transform -translate-x-1/2 w-11/12 bg-gradient-to-r from-amber-500 to-orange-600 rounded-3xl shadow-[0_0_100px_rgba(245,158,11,0.6)] p-8 text-center z-50 animate-in zoom-in duration-300">
           <BellRing size={64} className="text-white animate-bounce mx-auto mb-4" />
-          <h2 className="text-5xl font-black text-white mb-6">نداء جديد</h2>
-          <div className="text-8xl font-black text-white mb-4 drop-shadow-2xl">تذكرة: {lastCalled.ticket_number}</div>
+          <h2 className="text-5xl font-black text-white mb-4">نداء جديد</h2>
+          <div className="text-8xl font-black text-white mb-4 drop-shadow-2xl">
+            تذكرة: {lastCalled.ticket_number}
+          </div>
+          
+          {/* إضافة الاسم الأول للمريض في شاشة النداء الكبيرة */}
+          {lastCalled.patients?.name && (
+            <div className="text-6xl font-bold text-teal-100 mb-6 drop-shadow-lg flex items-center justify-center gap-3">
+              <User size={48} />
+              العميل: {getFirstName(lastCalled.patients.name)}
+            </div>
+          )}
+
           <p className="text-5xl font-bold text-amber-100">التوجه إلى: {lastCalled.clinics?.name}</p>
         </div>
       )}
 
-      {/* شبكة العيادات */}
       <main className="flex-1 p-8 overflow-hidden flex items-center justify-center">
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-8 w-full max-w-[1800px]">
           {activeClinics.map((clinic) => (
@@ -167,13 +171,20 @@ export default function TVScreen() {
                 }`}>
                   {clinic.currentTicket}
                 </span>
+                
+                {/* إضافة الاسم الأول تحت الرقم في المربعات الثابتة */}
+                {clinic.patientName && clinic.currentTicket !== '---' && (
+                  <span className="text-3xl text-slate-400 font-bold mt-6 flex items-center gap-2 bg-slate-800 px-4 py-2 rounded-full border border-slate-700">
+                    <User size={24} className="text-teal-500"/>
+                    {getFirstName(clinic.patientName)}
+                  </span>
+                )}
               </div>
             </div>
           ))}
         </div>
       </main>
 
-      {/* الشريط الإخباري */}
       <footer className="bg-teal-900 text-teal-100 py-4 overflow-hidden whitespace-nowrap border-t border-teal-700">
         <div className="animate-[marquee_25s_linear_infinite] inline-block text-3xl font-bold">
           {settings.news_ticker || 'مرحباً بكم...'}
