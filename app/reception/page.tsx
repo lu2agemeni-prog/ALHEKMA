@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { UserCheck, Ticket, Activity, Printer, ArrowRight } from 'lucide-react';
+import { UserCheck, Ticket, Activity, Printer, ArrowRight, Wallet } from 'lucide-react';
 import Link from 'next/link';
 
 export default function ReceptionPortal() {
@@ -14,19 +14,23 @@ export default function ReceptionPortal() {
   const [patientName, setPatientName] = useState('');
   const [phone, setPhone] = useState('');
   
-  // بيانات الزيارة والعيادة
+  // بيانات الزيارة
   const [clinicId, setClinicId] = useState('');
   const [height, setHeight] = useState('');
   const [weight, setWeight] = useState('');
   const [bloodPressure, setBloodPressure] = useState('');
 
-  // جلب العيادات والطابور الحالي
+  // الحسابات المالية الجديدة
+  const [totalCost, setTotalCost] = useState('');
+  const [paidAmount, setPaidAmount] = useState('');
+
+  // حساب المبلغ المتبقي تلقائياً
+  const remainingAmount = (parseFloat(totalCost || '0') - parseFloat(paidAmount || '0')).toFixed(2);
+
   const fetchData = async () => {
-    // جلب العيادات
     const { data: clinicsData } = await supabase.from('clinics').select('*');
     if (clinicsData) setClinics(clinicsData);
 
-    // جلب طابور اليوم لجميع العيادات
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -43,14 +47,13 @@ export default function ReceptionPortal() {
     fetchData();
   }, []);
 
-  // دالة تسجيل مريض جديد وقطع تذكرة
   const handleRegisterPatient = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!patientName || !clinicId) return alert('يرجى إدخال اسم المريض واختيار العيادة');
     
     setLoading(true);
     try {
-      // 1. تسجيل المريض (أو يمكن لاحقاً البحث برقم الهاتف إذا كان مسجلاً)
+      // 1. تسجيل المريض
       const { data: newPatient, error: patientError } = await supabase
         .from('patients')
         .insert([{ name: patientName, phone }])
@@ -59,7 +62,7 @@ export default function ReceptionPortal() {
 
       if (patientError) throw patientError;
 
-      // 2. تسجيل الزيارة (القياسات الحيوية)
+      // 2. تسجيل الزيارة (بما في ذلك القياسات والحسابات المالية)
       const { data: newVisit, error: visitError } = await supabase
         .from('visits')
         .insert([{ 
@@ -67,14 +70,27 @@ export default function ReceptionPortal() {
           clinic_id: clinicId,
           height: height ? parseFloat(height) : null,
           weight: weight ? parseFloat(weight) : null,
-          blood_pressure: bloodPressure
+          blood_pressure: bloodPressure,
+          total_cost: totalCost ? parseFloat(totalCost) : 0,
+          paid_amount: paidAmount ? parseFloat(paidAmount) : 0,
+          remaining_amount: parseFloat(remainingAmount)
         }])
         .select()
         .single();
 
       if (visitError) throw visitError;
 
-      // 3. تحديد رقم التذكرة (البحث عن آخر رقم في نفس العيادة اليوم)
+      // === الإضافة الذكية: تسجيل الإيراد في الخزنة تلقائياً ===
+      if (parseFloat(paidAmount) > 0) {
+        await supabase.from('finances').insert([{
+          transaction_type: 'income',
+          amount: parseFloat(paidAmount),
+          description: `كشف عيادة - المريض: ${patientName}`,
+          related_visit_id: newVisit.id
+        }]);
+      }
+
+      // 3. تحديد رقم التذكرة
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       
@@ -105,8 +121,9 @@ export default function ReceptionPortal() {
 
       alert(`تم بنجاح! رقم المريض في الطابور هو: ${nextTicketNumber}`);
       
-      // تفريغ الحقول وتحديث الجدول
-      setPatientName(''); setPhone(''); setHeight(''); setWeight(''); setBloodPressure('');
+      // تفريغ الحقول
+      setPatientName(''); setPhone(''); setHeight(''); setWeight(''); 
+      setBloodPressure(''); setTotalCost(''); setPaidAmount('');
       fetchData();
 
     } catch (error) {
@@ -117,7 +134,6 @@ export default function ReceptionPortal() {
     }
   };
 
-  // ترجمة حالة الطابور
   const getStatusBadge = (status: string) => {
     switch(status) {
       case 'waiting': return <span className="bg-amber-100 text-amber-800 px-2 py-1 rounded text-xs">في الانتظار</span>;
@@ -166,6 +182,29 @@ export default function ReceptionPortal() {
               </select>
             </div>
 
+            {/* القسم الجديد: الحسابات المالية */}
+            <div className="pt-4 border-t border-slate-100">
+              <h4 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                <Wallet size={16} className="text-green-600" /> الحسابات المالية
+              </h4>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-xs text-slate-500 mb-1">إجمالي تكلفة الكشف / الخدمة</label>
+                  <input type="number" value={totalCost} onChange={(e) => setTotalCost(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:border-green-500 focus:outline-none bg-green-50" placeholder="مثال: 300" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">المبلغ المدفوع الان</label>
+                  <input type="number" value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)} className="w-full p-2 border border-slate-300 rounded-lg text-sm focus:border-green-500 focus:outline-none" placeholder="مثال: 200" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">المبلغ المتبقي (آجل)</label>
+                  <div className={`w-full p-2 border rounded-lg text-sm font-bold text-center ${parseFloat(remainingAmount) > 0 ? 'bg-red-50 border-red-200 text-red-600' : 'bg-slate-100 border-slate-200 text-slate-500'}`}>
+                    {remainingAmount} ج.م
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="pt-4 border-t border-slate-100">
               <h4 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2"><Activity size={16} /> القياسات الحيوية (اختياري)</h4>
               <div className="grid grid-cols-2 gap-3">
@@ -184,9 +223,9 @@ export default function ReceptionPortal() {
               </div>
             </div>
 
-            <button type="submit" disabled={loading} className="w-full mt-4 bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 font-bold disabled:opacity-70">
+            <button type="submit" disabled={loading} className="w-full mt-4 bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 font-bold disabled:opacity-70 shadow-md">
               {loading ? 'جاري التسجيل...' : (
-                <><Printer size={20} /> حفظ وطباعة التذكرة</>
+                <><Printer size={20} /> حفظ الزيارة وطباعة التذكرة</>
               )}
             </button>
           </form>
